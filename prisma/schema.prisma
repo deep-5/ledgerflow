@@ -1,0 +1,572 @@
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Workspace {
+  id                      String    @id @default(cuid())
+  name                    String
+  legalEntityName         String?
+  taxRegistrationNumber   String?
+  defaultCurrency         String    @default("USD") // ISO 4217
+  defaultJurisdiction     String    @default("US-DE")
+  defaultTaxRateBps       Int       @default(0) // Basis points (1% = 100 bps)
+  timeZone                String    @default("America/New_York")
+  dateFormat              String    @default("MM/DD/YYYY")
+  fiscalYearEnd           String    @default("12-31")
+  emailNotifications      Boolean   @default(true)
+  clientPortalUrlSlug     String    @unique
+  autoRemindDaysBeforeDue Int       @default(3)
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+  archivedAt              DateTime?
+
+  memberships             Membership[]
+  clients                 Client[]
+  tasks                   Task[]
+  documentRequests        DocumentRequest[]
+  invoices                Invoice[]
+  timeEntries             TimeEntry[]
+  calendarEvents          CalendarEvent[]
+  notifications           Notification[]
+  auditLogs               AuditLog[]
+  automationRules         AutomationRule[]
+  integrations            Integration[]
+  taskTemplates           TaskTemplate[]
+  requestTemplates        RequestTemplate[]
+  taxProfiles             TaxProfile[]
+  invitations             Invitation[]
+}
+
+model User {
+  id             String    @id @default(cuid())
+  email          String    @unique
+  name           String
+  passwordHash   String?
+  avatarUrl      String?
+  timeZone       String    @default("America/New_York")
+  isStaff        Boolean   @default(true)
+  twoFactorEnabled Boolean @default(false)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  archivedAt     DateTime?
+
+  memberships    Membership[]
+  timeEntries    TimeEntry[]
+  assignedTasks  Task[]    @relation("TaskAssignee")
+  reviewedTasks  Task[]    @relation("TaskReviewer")
+  auditLogs      AuditLog[]
+  notificationPreferences NotificationPreference[]
+  userAccess     ClientUserAccess[]
+  sessions       Session[]
+}
+
+model Membership {
+  id          String    @id @default(cuid())
+  userId      String
+  workspaceId String
+  role        String    // Firm Owner, Administrator, Manager, Accountant, Bookkeeper, Reviewer, Client
+  weeklyCapacityHours Int @default(40)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId])
+  @@index([workspaceId, role])
+}
+
+model Client {
+  id                 String    @id @default(cuid())
+  workspaceId        String
+  name               String    // Primary Contact or Organization
+  company            String
+  clientType         String    // Individual, Sole Proprietorship, LLC, Corporation, Non-profit, UK Ltd, Partnership
+  email              String
+  phone              String?
+  address            String?
+  country            String    @default("US")
+  preferredCurrency  String    @default("USD")
+  timeZone           String    @default("America/New_York")
+  billingFrequency   String    @default("Monthly Retainer")
+  fiscalYearEnd      String?
+  internalNotes      String?
+  status             String    @default("Active") // Active, Inactive, Archived
+  assignedStaffId    String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  archivedAt         DateTime?
+
+  workspace          Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contacts           ClientContact[]
+  userAccess         ClientUserAccess[]
+  services           ClientService[]
+  tasks              Task[]
+  documentRequests   DocumentRequest[]
+  invoices           Invoice[]
+  timeEntries        TimeEntry[]
+  calendarEvents     CalendarEvent[]
+  messageThreads     MessageThread[]
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, assignedStaffId])
+}
+
+model ClientContact {
+  id          String   @id @default(cuid())
+  clientId    String
+  name        String
+  email       String
+  phone       String?
+  title       String?
+  hasPortalAccess Boolean @default(false)
+  isPrimary   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  @@index([clientId])
+}
+
+model ClientUserAccess {
+  id          String   @id @default(cuid())
+  clientId    String
+  userId      String
+  canManage   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([clientId, userId])
+  @@index([userId])
+}
+
+model Service {
+  id          String   @id @default(cuid())
+  name        String
+  category    String
+  description String?
+  basePriceMinorUnits Int @default(0) // Integer minor units (e.g. cents)
+  currency    String   @default("USD")
+}
+
+model ClientService {
+  id          String   @id @default(cuid())
+  clientId    String
+  name        String
+  category    String
+  feeMinorUnits Int
+  currency    String   @default("USD")
+  billingType String   @default("Monthly")
+
+  client      Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  @@index([clientId])
+}
+
+model Task {
+  id              String    @id @default(cuid())
+  workspaceId     String
+  clientId        String
+  title           String
+  serviceCategory String
+  description     String?
+  assignedStaffId String
+  reviewerId      String?
+  startDate       DateTime?
+  dueDate         DateTime
+  priority        String    @default("Medium") // Low, Medium, High, Urgent
+  status          String    @default("Not Started") // Not Started, In Progress, Waiting for Client, In Review, Completed, Cancelled
+  estimatedMinutes Int      @default(0)
+  actualMinutes   Int       @default(0)
+  isRecurring     Boolean   @default(false)
+  recurrenceRule  String?
+  blockedReason   String?   // Waiting on Client, Waiting on Review, Waiting on Teammate
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  completedAt     DateTime?
+  archivedAt      DateTime?
+
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  client          Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  assignedStaff   User      @relation("TaskAssignee", fields: [assignedStaffId], references: [id])
+  reviewer        User?     @relation("TaskReviewer", fields: [reviewerId], references: [id])
+  checklist       TaskChecklistItem[]
+  comments        TaskComment[]
+  timeEntries     TimeEntry[]
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, dueDate])
+  @@index([clientId])
+  @@index([assignedStaffId])
+}
+
+model TaskChecklistItem {
+  id        String   @id @default(cuid())
+  taskId    String
+  text      String
+  completed Boolean  @default(false)
+  sortOrder Int      @default(0)
+
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  @@index([taskId])
+}
+
+model TaskComment {
+  id             String   @id @default(cuid())
+  taskId         String
+  authorId       String
+  authorName     String
+  content        String
+  isInternalOnly Boolean  @default(true) // true = internal team memo, false = client visible
+  createdAt      DateTime @default(now())
+
+  task           Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  @@index([taskId])
+}
+
+model TaskTemplate {
+  id              String   @id @default(cuid())
+  workspaceId     String
+  name            String
+  serviceCategory String
+  defaultPriority String   @default("Medium")
+  estimatedHours  Float    @default(2.0)
+  checklistItemsJson String // serialized checklist
+  linkedDocTemplateId String?
+
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+model DocumentRequest {
+  id                  String   @id @default(cuid())
+  workspaceId         String
+  clientId            String
+  title               String
+  status              String   @default("Draft") // Draft, Sent, Partially Received, Submitted, In Review, Changes Requested, Completed, Cancelled
+  dateSent            DateTime?
+  dueDate             DateTime
+  instructions        String?
+  reminderSchedule    String   @default("Every 3 Days")
+  requestedByStaffId  String
+  assignedReviewerId  String
+  linkedTaskId        String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  workspace           Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  client              Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  items               RequestedDocument[]
+
+  @@index([workspaceId, status])
+  @@index([clientId])
+}
+
+model RequestedDocument {
+  id                String   @id @default(cuid())
+  requestId         String
+  name              String
+  description       String?
+  required          Boolean  @default(true)
+  allowedExtensions String   @default(".pdf,.csv,.xlsx,.jpg,.png")
+  clientDeclinedReason String? // "I don't have this" reason
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  request           DocumentRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  uploads           UploadedDocument[]
+
+  @@index([requestId])
+}
+
+model UploadedDocument {
+  id                String   @id @default(cuid())
+  requestedDocId    String
+  version           Int      @default(1)
+  fileName          String
+  fileSizeBytes     Int
+  mimeType          String
+  checksumSha256    String?
+  storageKey        String
+  uploadedBy        String
+  approvalStatus    String   @default("Pending") // Pending, Approved, Rejected - Reupload Required
+  reviewNotes       String?
+  scanStatus        String   @default("Clean") // Pending, Clean, Flagged
+  createdAt         DateTime @default(now())
+
+  requestedDocument RequestedDocument @relation(fields: [requestedDocId], references: [id], onDelete: Cascade)
+  @@index([requestedDocId])
+}
+
+model RequestTemplate {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  description String?
+  itemsJson   String   // serialized items
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+model MessageThread {
+  id                String   @id @default(cuid())
+  clientId          String
+  subject           String
+  folder            String   @default("inbox") // inbox, sent, starred, archived
+  isStarred         Boolean  @default(false)
+  relatedTaskId     String?
+  assignedStaffId   String?
+  lastUpdated       DateTime @default(now())
+  createdAt         DateTime @default(now())
+
+  client            Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  messages          Message[]
+
+  @@index([clientId])
+}
+
+model Message {
+  id             String   @id @default(cuid())
+  threadId       String
+  senderId       String
+  senderName     String
+  senderRole     String
+  content        String
+  isInternalNote Boolean  @default(false)
+  deliveryStatus String   @default("In-app") // In-app, Email sent, Email failed
+  sentAt         DateTime @default(now())
+
+  thread         MessageThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  @@index([threadId])
+}
+
+model Invoice {
+  id              String   @id @default(cuid())
+  workspaceId     String
+  clientId        String
+  invoiceNumber   String
+  status          String   @default("Draft") // Draft, Sent, Partially Paid, Paid, Overdue, Void
+  issueDate       DateTime
+  dueDate         DateTime
+  currency        String   @default("USD")
+  subtotalMinorUnits Int   @default(0)
+  taxMinorUnits   Int      @default(0)
+  totalMinorUnits Int      @default(0)
+  paidMinorUnits  Int      @default(0)
+  balanceMinorUnits Int    @default(0)
+  paymentTerms    String   @default("Net 15 Days")
+  notes           String?
+  isLocked        Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  client          Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  lines           InvoiceLine[]
+  payments        Payment[]
+  creditNotes     CreditNote[]
+
+  @@unique([workspaceId, invoiceNumber])
+  @@index([workspaceId, status])
+  @@index([clientId])
+}
+
+model InvoiceLine {
+  id                String   @id @default(cuid())
+  invoiceId         String
+  description       String
+  quantity          Float    @default(1.0)
+  unitPriceMinorUnits Int
+  taxRateBps        Int      @default(0)
+  totalMinorUnits   Int
+  timeEntryId       String?  @unique
+
+  invoice           Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  timeEntry         TimeEntry? @relation(fields: [timeEntryId], references: [id])
+  @@index([invoiceId])
+}
+
+model Payment {
+  id              String   @id @default(cuid())
+  invoiceId       String
+  amountMinorUnits Int
+  currency        String   @default("USD")
+  method          String   // Credit Card, ACH, Bank Transfer, Manual Check
+  reference       String?
+  paymentDate     DateTime @default(now())
+  recordedById    String
+
+  invoice         Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  @@index([invoiceId])
+}
+
+model CreditNote {
+  id              String   @id @default(cuid())
+  invoiceId       String
+  amountMinorUnits Int
+  currency        String   @default("USD")
+  reason          String
+  issuedDate      DateTime @default(now())
+
+  invoice         Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  @@index([invoiceId])
+}
+
+model TaxProfile {
+  id              String   @id @default(cuid())
+  workspaceId     String
+  name            String
+  rateBps         Int      // Basis points (20% = 2000 bps)
+  jurisdiction    String
+  isInclusive     Boolean  @default(false)
+
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+model TimeEntry {
+  id              String    @id @default(cuid())
+  workspaceId     String
+  staffId         String
+  clientId        String
+  taskId          String?
+  description     String
+  startedAt       DateTime
+  endedAt         DateTime?
+  durationMinutes Int       @default(0)
+  billable        Boolean   @default(true)
+  rateMinorUnits  Int       @default(0)
+  approvalStatus  String    @default("Draft") // Draft, Submitted, Approved, Rejected
+  isBilled        Boolean   @default(false)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  staff           User      @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  client          Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  task            Task?     @relation(fields: [taskId], references: [id])
+  invoiceLine     InvoiceLine?
+
+  @@index([workspaceId, staffId])
+  @@index([clientId])
+}
+
+model CalendarEvent {
+  id              String   @id @default(cuid())
+  workspaceId     String
+  clientId        String?
+  title           String
+  type            String   // Task Deadline, Document Due, Invoice Due, Client Review, Team Meeting
+  eventDate       DateTime
+  timeString      String?
+  assignedStaffId String?
+  relatedId       String?
+  createdAt       DateTime @default(now())
+
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  client          Client?   @relation(fields: [clientId], references: [id])
+  @@index([workspaceId, eventDate])
+}
+
+model Notification {
+  id          String   @id @default(cuid())
+  workspaceId String
+  userId      String
+  title       String
+  message     String
+  type        String   // document, task, invoice, message, system
+  read        Boolean  @default(false)
+  linkToView  String?
+  linkToId    String?
+  createdAt   DateTime @default(now())
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  @@index([userId, read])
+}
+
+model NotificationPreference {
+  id          String   @id @default(cuid())
+  userId      String
+  eventType   String
+  inApp       Boolean  @default(true)
+  email       Boolean  @default(false)
+  dailyDigest Boolean  @default(false)
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@unique([userId, eventType])
+}
+
+model AutomationRule {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  description String
+  trigger     String
+  action      String
+  enabled     Boolean  @default(true)
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  workspaceId String
+  actorId     String
+  actorName   String
+  action      String
+  category    String   // Client, Task, Document, Invoice, Security, Time
+  entity      String
+  entityId    String
+  details     String
+  beforeJson  String?
+  afterJson   String?
+  ipAddress   String?  @default("127.0.0.1")
+  userAgent   String?
+  timestamp   DateTime @default(now())
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  actor       User      @relation(fields: [actorId], references: [id])
+
+  @@index([workspaceId, category])
+  @@index([workspaceId, timestamp])
+}
+
+model Integration {
+  id          String   @id @default(cuid())
+  workspaceId String
+  provider    String   // xero, qbo, stripe, hmrc_mtd, irs_mef
+  name        String
+  status      String   @default("Not connected") // Not connected, Connected, Error, Staged, Authorized
+  configJson  String?
+  lastSyncAt  DateTime?
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  @@unique([workspaceId, provider])
+}
+
+model Invitation {
+  id          String   @id @default(cuid())
+  workspaceId String
+  email       String
+  role        String
+  token       String   @unique
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  createdAt   DateTime @default(now())
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  userId       String
+  sessionToken String   @unique
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
